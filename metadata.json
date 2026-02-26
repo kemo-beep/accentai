@@ -1,0 +1,5 @@
+{
+  "name": "Accent AI",
+  "description": "A personalized AI pronunciation coach offering real-time feedback, industry-specific role plays, and tempo tracking.",
+  "requestFramePermissions": ["microphone"]
+}
