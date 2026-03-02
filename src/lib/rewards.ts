@@ -19,38 +19,36 @@ export const getEarnedBadges = (): string[] => {
   return saved ? JSON.parse(saved) : [];
 };
 
-export const checkNewBadges = (sessionStats: { pronunciationScore: number; tempo: number; fillerWordCount: number }, totalSessions: number): Badge[] => {
-  const earned = getEarnedBadges();
+export const checkNewBadges = (
+  sessionStats: { pronunciationScore: number; tempo: number; fillerWordCount: number }, 
+  totalSessions: number,
+  earnedBadgeIds: string[] = []
+): Badge[] => {
   const newBadges: Badge[] = [];
 
   // Check First Step
-  if (!earned.includes('first_step') && totalSessions >= 1) {
+  if (!earnedBadgeIds.includes('first_step') && totalSessions >= 1) {
     newBadges.push(BADGES.find(b => b.id === 'first_step')!);
   }
 
   // Check High Flyer
-  if (!earned.includes('high_flyer') && sessionStats.pronunciationScore >= 90) {
+  if (!earnedBadgeIds.includes('high_flyer') && sessionStats.pronunciationScore >= 90) {
     newBadges.push(BADGES.find(b => b.id === 'high_flyer')!);
   }
 
   // Check Speedster
-  if (!earned.includes('speedster') && sessionStats.tempo >= 130) {
+  if (!earnedBadgeIds.includes('speedster') && sessionStats.tempo >= 130) {
     newBadges.push(BADGES.find(b => b.id === 'speedster')!);
   }
 
   // Check Smooth Talker
-  if (!earned.includes('smooth_talker') && sessionStats.fillerWordCount < 3) {
+  if (!earnedBadgeIds.includes('smooth_talker') && sessionStats.fillerWordCount < 3) {
     newBadges.push(BADGES.find(b => b.id === 'smooth_talker')!);
   }
 
   // Check Master Speaker
-  if (!earned.includes('master_speaker') && totalSessions >= 10) {
+  if (!earnedBadgeIds.includes('master_speaker') && totalSessions >= 10) {
     newBadges.push(BADGES.find(b => b.id === 'master_speaker')!);
-  }
-
-  if (newBadges.length > 0) {
-    const updated = [...earned, ...newBadges.map(b => b.id)];
-    localStorage.setItem('user_badges', JSON.stringify(updated));
   }
 
   return newBadges;

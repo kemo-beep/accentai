@@ -6,7 +6,8 @@ import {
   Settings,
   User,
   Menu,
-  X
+  X,
+  GraduationCap
 } from 'lucide-react';
 import { useState, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -16,13 +17,18 @@ interface LayoutProps {
   children: ReactNode;
   activeTab: string;
   onTabChange: (tab: string) => void;
+  isLoggedIn: boolean;
+  user: { name: string; email: string } | null;
+  onLoginClick: () => void;
+  onLogoutClick: () => void;
 }
 
-export function Layout({ children, activeTab, onTabChange }: LayoutProps) {
+export function Layout({ children, activeTab, onTabChange, isLoggedIn, user, onLoginClick, onLogoutClick }: LayoutProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const navItems = [
-    { id: 'dashboard', label: 'Path', icon: BookOpen },
+    { id: 'dashboard', label: 'Dashboard', icon: BookOpen },
+    { id: 'learn', label: 'Learn', icon: GraduationCap },
     { id: 'practice', label: 'Practice', icon: Mic },
     { id: 'stats', label: 'Progress', icon: BarChart3 },
     { id: 'profile', label: 'Profile', icon: User },
@@ -38,9 +44,19 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps) {
           </div>
           <span className="font-serif font-bold text-lg">Accent AI</span>
         </div>
-        <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
-          {isMobileMenuOpen ? <X /> : <Menu />}
-        </button>
+        <div className="flex items-center gap-3">
+            {!isLoggedIn && (
+                <button 
+                    onClick={onLoginClick}
+                    className="text-sm font-bold text-olive-600 hover:text-olive-700"
+                >
+                    Sign In
+                </button>
+            )}
+            <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+            {isMobileMenuOpen ? <X /> : <Menu />}
+            </button>
+        </div>
       </div>
 
       {/* Mobile Menu */}
@@ -104,16 +120,26 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps) {
         </nav>
 
         <div className="mt-auto pt-6 border-t border-stone-200">
-          <div className="p-4 bg-cream-100 rounded-xl">
-            <div className="flex items-center gap-2 mb-2">
-              <Trophy className="text-terracotta-500" size={16} />
-              <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Daily Streak</span>
-            </div>
-            <div className="flex items-end gap-1">
-              <span className="text-2xl font-serif font-bold text-stone-900">12</span>
-              <span className="text-sm text-stone-500 mb-1">days</span>
-            </div>
-          </div>
+          {isLoggedIn ? (
+              <div className="p-4 bg-cream-100 rounded-xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <Trophy className="text-terracotta-500" size={16} />
+                  <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Daily Streak</span>
+                </div>
+                <div className="flex items-end gap-1">
+                  <span className="text-2xl font-serif font-bold text-stone-900">12</span>
+                  <span className="text-sm text-stone-500 mb-1">days</span>
+                </div>
+              </div>
+          ) : (
+              <button 
+                onClick={onLoginClick}
+                className="w-full bg-stone-900 hover:bg-stone-800 text-white font-bold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                <User size={18} />
+                Sign In
+              </button>
+          )}
         </div>
       </aside>
 

@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, AreaChart, Area } from 'recharts';
 import { Clock, Zap, MessageSquare, TrendingUp, Mic, Search, Filter, X, ChevronLeft, ChevronRight, Download, Share2, Calendar, Award, Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { BADGES, getEarnedBadges } from '@/lib/rewards';
+import { db } from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 
 export function ProgressStats() {
   const [timeRange, setTimeRange] = useState('Weekly');
@@ -12,11 +14,59 @@ export function ProgressStats() {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedSession, setSelectedSession] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [earnedBadgeIds, setEarnedBadgeIds] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const ITEMS_PER_PAGE = 5;
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setIsLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (user) {
+        try {
+          // Fetch sessions
+          const sessions = await db.getPracticeSessions(user.id);
+          if (sessions) {
+            const formattedHistory = sessions.map((s: any) => ({
+              id: s.id,
+              date: new Date(s.created_at).toLocaleString(),
+              industry: s.industry,
+              score: s.score,
+              duration: `${Math.floor(s.duration / 60)} min`,
+              durationSeconds: s.duration,
+              tempo: s.transcript?.stats?.tempo || 0,
+              fillerCount: s.transcript?.stats?.filler_count || 0,
+              feedback: s.feedback || [],
+              trend: [] // We could calculate trend if we had more data points per session
+            }));
+            setHistory(formattedHistory);
+          }
+
+          // Fetch badges
+          const badges = await db.getUserBadges(user.id);
+          if (badges) {
+            setEarnedBadgeIds(badges.map(b => b.badge_id));
+          }
+        } catch (error) {
+          console.error("Error fetching data:", error);
+        }
+      } else {
+        // Fallback to local storage
+        const localHistory = JSON.parse(localStorage.getItem('accent_ai_history') || '[]');
+        setHistory(localHistory);
+        setEarnedBadgeIds(getEarnedBadges());
+      }
+      setIsLoading(false);
+    };
+
+    fetchData();
+  }, []);
 
   const timeRanges = ['Daily', 'Weekly', '1 Month', '3 Months', 'Year', 'All Time'];
 
-  // Mock data for different ranges
+  // Mock data for different ranges (keep this for now as placeholder/demo)
   const getStatsForRange = (range: string) => {
     switch (range) {
       case 'Daily':
@@ -135,70 +185,14 @@ export function ProgressStats() {
         return { chartData: [], summary: { tempo: 0, clarity: 0, time: '0', timeUnit: 'min', sessions: 0, clarityTrend: '' } };
     }
   };
-
-  const { chartData, summary } = getStatsForRange(timeRange);
+  
+  const { chartData, summary } = getStatsForRange(timeRange); 
 
   const fillerWords = [
     { word: 'um', count: 12 },
     { word: 'like', count: 8 },
     { word: 'you know', count: 5 },
   ];
-
-  // Load history from localStorage and merge with mock data
-  const localHistory = JSON.parse(localStorage.getItem('accent_ai_history') || '[]');
-  
-  const mockHistory = [
-    { 
-      id: 1, 
-      date: 'Today, 10:30 AM', 
-      industry: 'Tech & Engineering', 
-      score: 92, 
-      duration: '12 min', 
-      durationSeconds: 720, 
-      trend: [80, 85, 88, 90, 92, 91, 92],
-      tempo: 145,
-      fillerCount: 3,
-      feedback: ['Great pacing on technical terms', 'Clear articulation of "algorithm"', 'Slight hesitation on "architecture"']
-    },
-    { 
-      id: 2, 
-      date: 'Yesterday, 4:15 PM', 
-      industry: 'Medical & Health', 
-      score: 85, 
-      duration: '8 min', 
-      durationSeconds: 480, 
-      trend: [75, 78, 80, 82, 85, 84, 85],
-      tempo: 138,
-      fillerCount: 8,
-      feedback: ['Good empathy in tone', 'Watch out for "um" fillers', 'Clear explanation of diagnosis']
-    },
-    { 
-      id: 3, 
-      date: 'Feb 24, 9:00 AM', 
-      industry: 'Business & Sales', 
-      score: 88, 
-      duration: '15 min', 
-      durationSeconds: 900, 
-      trend: [82, 84, 86, 88, 87, 89, 88],
-      tempo: 152,
-      fillerCount: 5,
-      feedback: ['Strong opening statement', 'Confident closing', 'Slightly fast on the pricing section']
-    },
-    { 
-      id: 4, 
-      date: 'Feb 22, 2:30 PM', 
-      industry: 'Tech & Engineering', 
-      score: 78, 
-      duration: '10 min', 
-      durationSeconds: 600, 
-      trend: [70, 72, 75, 74, 76, 78, 78],
-      tempo: 128,
-      fillerCount: 12,
-      feedback: ['Good technical accuracy', 'Too many "like" fillers', 'Try to vary your intonation more']
-    },
-  ];
-
-  const history = [...localHistory, ...mockHistory];
 
   // Get unique industries for filter
   const industries = Array.from(new Set(history.map(h => h.industry)));
@@ -219,18 +213,6 @@ export function ProgressStats() {
   if (currentPage > totalPages && totalPages > 0) {
     setCurrentPage(1);
   }
-
-  const totalSeconds = history.reduce((acc, session) => {
-    // Handle both "12 min" string format and numeric durationSeconds
-    if (session.durationSeconds) {
-        return acc + session.durationSeconds;
-    }
-    const minutes = parseInt(session.duration);
-    return acc + (minutes * 60);
-  }, 0);
-  
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const totalHours = (totalMinutes / 60).toFixed(1);
 
   const getPageNumbers = () => {
     const pages = [];
@@ -255,6 +237,14 @@ export function ProgressStats() {
     }
     return pages;
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-olive-500"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -533,7 +523,7 @@ export function ProgressStats() {
         </h3>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
             {BADGES.map(badge => {
-                const isEarned = getEarnedBadges().includes(badge.id);
+                const isEarned = earnedBadgeIds.includes(badge.id);
                 return (
                     <div 
                         key={badge.id} 

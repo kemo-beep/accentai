@@ -2,12 +2,20 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
+import { LearnPage } from './components/LearnPage';
+import { CourseDetail } from './components/CourseDetail';
+import { LessonView } from './components/LessonView';
 import { PracticeSession } from './components/PracticeSession';
 import { ProgressStats } from './components/ProgressStats';
+import { AuthModal } from './components/AuthModal';
 import { Mic } from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { CLEAR_THINKING_COURSE } from '@/data/courses';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
+  const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
   const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null);
   const [customTopic, setCustomTopic] = useState<string | null>(null);
   const [targetAccent, setTargetAccent] = useState(() => {
@@ -24,6 +32,47 @@ export default function App() {
   const [micPermissionGranted, setMicPermissionGranted] = useState(false);
   const [showMicModal, setShowMicModal] = useState(false);
   const [pendingPractice, setPendingPractice] = useState<{industry: string, topic?: string} | null>(null);
+  
+  // Auth State
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [user, setUser] = useState<{name: string, email: string} | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
+    // Check active session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setIsLoggedIn(true);
+        setUser({
+          name: session.user.user_metadata.full_name || 'User',
+          email: session.user.email || '',
+        });
+      }
+    }).catch(err => {
+      console.warn("Supabase auth session check failed:", err);
+      // Gracefully handle the error - user stays logged out
+    });
+
+    // Listen for auth changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setIsLoggedIn(true);
+        setUser({
+          name: session.user.user_metadata.full_name || 'User',
+          email: session.user.email || '',
+        });
+      } else {
+        setIsLoggedIn(false);
+        setUser(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('user_target_accent', targetAccent);
@@ -32,6 +81,21 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('user_daily_goal', dailyGoal.toString());
   }, [dailyGoal]);
+
+  const handleLogin = (userData: { name: string; email: string }) => {
+    // State updates are handled by onAuthStateChange listener
+    setShowAuthModal(false);
+    
+    // If there was a pending practice session, start it
+    if (pendingPractice) {
+        handleStartPractice(pendingPractice.industry, pendingPractice.topic);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setActiveTab('dashboard'); // Redirect to dashboard
+  };
 
   useEffect(() => {
     // Check initial permission state
@@ -52,6 +116,12 @@ export default function App() {
   const goalOptions = [5, 10, 15, 20, 30, 45, 60];
 
   const handleStartPractice = (industry: string, topic?: string) => {
+    if (!isLoggedIn) {
+        setPendingPractice({ industry, topic });
+        setShowAuthModal(true);
+        return;
+    }
+
     if (micPermissionGranted) {
       setSelectedIndustry(industry);
       setCustomTopic(topic || null);
@@ -93,18 +163,99 @@ export default function App() {
   ];
 
   const handleTabChange = (tab: string) => {
-    if (tab === 'practice' && !micPermissionGranted) {
-      setPendingPractice({ industry: selectedIndustry || 'general', topic: customTopic || undefined });
-      setShowMicModal(true);
+    if (tab === 'practice') {
+        if (!isLoggedIn) {
+            setShowAuthModal(true);
+            return;
+        }
+        if (!micPermissionGranted) {
+            setPendingPractice({ industry: selectedIndustry || 'general', topic: customTopic || undefined });
+            setShowMicModal(true);
+            return;
+        }
+    }
+    setActiveTab(tab);
+    if (tab !== 'course') {
+      setActiveCourseId(null);
+    }
+    setActiveLessonId(null);
+  };
+
+  const handleCourseSelect = (courseId: string) => {
+    setActiveCourseId(courseId);
+    setActiveTab('course');
+  };
+
+  const handleStartLesson = (lessonId: string) => {
+    setActiveLessonId(lessonId);
+  };
+
+  const handleLessonComplete = () => {
+    // Logic to mark lesson as complete would go here
+    // For now, just find the next lesson
+    if (!activeLessonId) return;
+    
+    // Simple logic to find next lesson
+    let foundCurrent = false;
+    let nextLessonId = null;
+    
+    for (const module of CLEAR_THINKING_COURSE.modules) {
+      for (const lesson of module.lessons) {
+        if (foundCurrent) {
+          nextLessonId = lesson.id;
+          break;
+        }
+        if (lesson.id === activeLessonId) {
+          foundCurrent = true;
+        }
+      }
+      if (nextLessonId) break;
+    }
+
+    if (nextLessonId) {
+      setActiveLessonId(nextLessonId);
     } else {
-      setActiveTab(tab);
+      // Course complete!
+      setActiveLessonId(null);
+      setActiveTab('stats'); // Or back to course detail
     }
   };
 
+  // Find current lesson object
+  const currentLesson = activeLessonId 
+    ? CLEAR_THINKING_COURSE.modules.flatMap(m => m.lessons).find(l => l.id === activeLessonId)
+    : null;
+
   return (
-    <Layout activeTab={activeTab} onTabChange={handleTabChange}>
+    <Layout 
+        activeTab={activeTab} 
+        onTabChange={handleTabChange} 
+        isLoggedIn={isLoggedIn} 
+        user={user} 
+        onLoginClick={() => setShowAuthModal(true)}
+        onLogoutClick={handleLogout}
+    >
       {activeTab === 'dashboard' && (
-        <Dashboard onStartPractice={handleStartPractice} dailyGoal={dailyGoal} />
+        <Dashboard onStartPractice={handleStartPractice} dailyGoal={dailyGoal} userName={user?.name} />
+      )}
+      {activeTab === 'learn' && (
+        <LearnPage onStartPractice={handleStartPractice} onCourseSelect={handleCourseSelect} />
+      )}
+      {activeTab === 'course' && activeCourseId && !activeLessonId && (
+        <CourseDetail 
+          courseId={activeCourseId} 
+          onBack={() => setActiveTab('learn')}
+          onStartLesson={handleStartLesson}
+        />
+      )}
+      {activeTab === 'course' && activeLessonId && currentLesson && (
+        <LessonView 
+          lesson={currentLesson}
+          onBack={() => setActiveLessonId(null)}
+          onComplete={() => {}}
+          onNext={handleLessonComplete}
+          hasNext={true} // Simplified for now
+        />
       )}
       {activeTab === 'practice' && (
         <PracticeSession 
@@ -127,15 +278,17 @@ export default function App() {
 
           <div className="bg-white rounded-3xl p-8 border border-stone-100 shadow-sm flex items-center gap-6">
             <div className="w-24 h-24 rounded-full bg-olive-500 flex items-center justify-center text-white font-serif font-bold text-4xl">
-              A
+              {user?.name?.charAt(0) || 'A'}
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-stone-900">Alex Johnson</h2>
-              <p className="text-stone-500">alex.johnson@example.com</p>
-              <div className="flex items-center gap-2 mt-3">
-                <span className="bg-stone-100 text-stone-600 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide">Premium Member</span>
-                <span className="bg-olive-100 text-olive-700 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide">Level 4</span>
-              </div>
+              <h2 className="text-2xl font-bold text-stone-900">{user?.name || 'Guest User'}</h2>
+              <p className="text-stone-500">{user?.email || 'Please log in'}</p>
+              {isLoggedIn && (
+                  <div className="flex items-center gap-2 mt-3">
+                    <span className="bg-stone-100 text-stone-600 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide">Premium Member</span>
+                    <span className="bg-olive-100 text-olive-700 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide">Level 4</span>
+                  </div>
+              )}
             </div>
           </div>
 
@@ -234,10 +387,37 @@ export default function App() {
                 </div>
                 <div className="text-olive-500 font-medium text-sm">Manage</div>
               </div>
+              
+              {isLoggedIn ? (
+                  <div className="p-6 flex items-center justify-center border-t border-stone-100">
+                    <button 
+                        onClick={handleLogout}
+                        className="text-red-500 font-bold hover:bg-red-50 px-6 py-2 rounded-xl transition-colors w-full sm:w-auto"
+                    >
+                        Sign Out
+                    </button>
+                  </div>
+              ) : (
+                  <div className="p-6 flex items-center justify-center border-t border-stone-100">
+                    <button 
+                        onClick={() => setShowAuthModal(true)}
+                        className="bg-olive-500 hover:bg-olive-600 text-white font-bold px-6 py-2 rounded-xl transition-colors w-full sm:w-auto shadow-lg shadow-olive-500/20"
+                    >
+                        Sign In / Create Account
+                    </button>
+                  </div>
+              )}
             </div>
           </div>
         </div>
       )}
+
+      {/* Auth Modal */}
+      <AuthModal 
+        isOpen={showAuthModal} 
+        onClose={() => setShowAuthModal(false)} 
+        onLogin={handleLogin} 
+      />
 
       {/* Microphone Permission Modal */}
       <AnimatePresence>

@@ -5,7 +5,9 @@ import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { cn } from '@/lib/utils';
 import { floatTo16BitPCM, arrayBufferToBase64, base64ToFloat32PCM } from '@/lib/audio-utils';
 import { playStartSound, playEndSound, playFeedbackSound, playSuccessSound } from '@/lib/sound-effects';
-import { checkNewBadges, Badge } from '@/lib/rewards';
+import { checkNewBadges, Badge, getEarnedBadges } from '@/lib/rewards';
+import { db } from '@/lib/db';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 
 interface PracticeSessionProps {
   industry: string;
@@ -241,6 +243,16 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
           If the user makes a significant mistake or uses too many filler words, use the 'giveFeedback' tool to gently notify them, but keep the conversation flowing naturally.
           Do not interrupt for every small mistake.
           Start by introducing the scenario based on the topic.`;
+      } else if (industry === 'impromptu') {
+          systemInstruction = `You are an expert impromptu speaking coach.
+          ${accentInstruction}
+          Your goal is to help the user practice thinking on their feet and speaking clearly without preparation.
+          Start by giving the user a random, thought-provoking topic or question (e.g., "If you could have dinner with any historical figure, who would it be?", "Is technology making us more connected?", "Describe your perfect day.").
+          Ask them to speak for about 1 minute on this topic.
+          Listen to their response without interrupting, unless they struggle significantly.
+          After they finish their response, provide brief, constructive feedback on their structure, clarity, and delivery.
+          Then, give them a new, different topic to practice.
+          Keep the tone encouraging but challenging.`;
       } else {
           systemInstruction = `You are a friendly and professional pronunciation coach specializing in the ${industry} industry. 
           ${accentInstruction}
@@ -443,15 +455,19 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
     nextPlayTimeRef.current = startTime + buffer.duration;
   };
 
-  const stopSession = () => {
+  const stopSession = async () => {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
     }
     if (processorRef.current) {
       processorRef.current.disconnect();
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      try {
+        audioContextRef.current.close();
+      } catch (e) {
+        console.error("Error closing AudioContext:", e);
+      }
     }
     if (sessionRef.current) {
       sessionRef.current.then((s: any) => s.close());
@@ -464,8 +480,6 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
     const duration = (Date.now() - startTimeRef.current) / 1000;
     
     // Calculate score based on fillers (simple heuristic)
-    // Start at 100, deduct 5 for each filler, capped at min 60.
-    // Add some randomness to simulate other factors (intonation, etc)
     const baseScore = 100 - (fillerCount * 5);
     const randomVariance = Math.floor(Math.random() * 10) - 5; // -5 to +5
     const calculatedScore = Math.min(100, Math.max(60, baseScore + randomVariance));
@@ -480,26 +494,81 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
     setStatus('summary');
     playEndSound();
     
-    // Save to persistent history
-    const historyItem = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        industry: industry === 'custom' ? (customTopic || 'Custom') : industry,
-        score: calculatedScore,
-        duration: `${Math.floor(duration / 60)} min`,
-        durationSeconds: duration,
-        trend: [] // We could add trend data here if we tracked it over time
-    };
+    // Save to persistent history (Supabase)
+    let user = null;
+    if (isSupabaseConfigured) {
+        try {
+            const { data } = await supabase.auth.getUser();
+            user = data.user;
+        } catch (e) {
+            console.warn("Failed to fetch user:", e);
+        }
+    }
     
-    const existingHistory = JSON.parse(localStorage.getItem('accent_ai_history') || '[]');
-    const updatedHistory = [historyItem, ...existingHistory];
-    localStorage.setItem('accent_ai_history', JSON.stringify(updatedHistory));
-    
-    // Check for new badges
-    const earnedBadges = checkNewBadges(mockStats, updatedHistory.length);
-    if (earnedBadges.length > 0) {
-        setNewBadges(earnedBadges);
-        playSuccessSound(); // Play success sound for badge unlock too!
+    if (user) {
+        try {
+            // Save session
+            await db.savePracticeSession(user.id, {
+                industry: industry === 'custom' ? (customTopic || 'Custom') : industry,
+                score: calculatedScore,
+                duration: Math.floor(duration),
+                tempo: mockStats.tempo,
+                filler_count: fillerCount,
+                feedback: feedbackHistory,
+                transcript: transcript
+            });
+
+            // Check for new badges
+            // First, get existing badges
+            const existingBadges = await db.getUserBadges(user.id);
+            const earnedBadgeIds = existingBadges.map(b => b.badge_id);
+            
+            // We need total sessions count for some badges
+            const sessions = await db.getPracticeSessions(user.id);
+            const totalSessions = sessions ? sessions.length + 1 : 1; // +1 for current session
+
+            // Calculate new badges
+            const newBadgeList = checkNewBadges(mockStats, totalSessions, earnedBadgeIds);
+            
+            if (newBadgeList.length > 0) {
+                setNewBadges(newBadgeList);
+                playSuccessSound();
+                
+                // Save new badges
+                for (const badge of newBadgeList) {
+                    await db.saveUserBadge(user.id, badge.id);
+                }
+            }
+        } catch (error) {
+            console.error("Error saving session to Supabase:", error);
+        }
+    } else {
+        // Fallback to localStorage for guest users (or handle as error)
+        const historyItem = {
+            id: Date.now(),
+            date: new Date().toLocaleString(),
+            industry: industry === 'custom' ? (customTopic || 'Custom') : industry,
+            score: calculatedScore,
+            duration: `${Math.floor(duration / 60)} min`,
+            durationSeconds: duration,
+            trend: [] 
+        };
+        
+        const existingHistory = JSON.parse(localStorage.getItem('accent_ai_history') || '[]');
+        const updatedHistory = [historyItem, ...existingHistory];
+        localStorage.setItem('accent_ai_history', JSON.stringify(updatedHistory));
+        
+        // Check for new badges (local)
+        const earnedBadges = checkNewBadges(mockStats, updatedHistory.length, getEarnedBadges());
+        if (earnedBadges.length > 0) {
+            setNewBadges(earnedBadges);
+            playSuccessSound();
+            
+            // Save local badges
+            const currentLocalBadges = getEarnedBadges();
+            const updatedLocalBadges = [...currentLocalBadges, ...earnedBadges.map(b => b.id)];
+            localStorage.setItem('user_badges', JSON.stringify(updatedLocalBadges));
+        }
     }
 
     localStorage.removeItem(`accent_ai_session_${industry}`);
@@ -563,8 +632,12 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
         if (processorRef.current) {
             processorRef.current.disconnect();
         }
-        if (audioContextRef.current) {
-            audioContextRef.current.close();
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            try {
+                audioContextRef.current.close();
+            } catch (e) {
+                console.error("Error closing AudioContext in cleanup:", e);
+            }
         }
         if (sessionRef.current) {
             sessionRef.current.then((s: any) => s.close());
@@ -693,7 +766,9 @@ export function PracticeSession({ industry, customTopic, targetAccent, onComplet
           </button>
           <div>
             <h2 className="font-serif font-bold text-xl capitalize">
-              {industry === 'custom' ? (customTopic || 'Custom Scenario') : `${industry} Roleplay`}
+              {industry === 'custom' ? (customTopic || 'Custom Scenario') : 
+               industry === 'impromptu' ? 'Impromptu Speaking' : 
+               `${industry} Roleplay`}
             </h2>
             <p className="text-xs text-stone-500">Live Feedback Enabled</p>
           </div>

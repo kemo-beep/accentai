@@ -1,48 +1,133 @@
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Play, Star, Clock, ArrowRight, CheckCircle2, Lock, Sparkles } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
+import { Play, CheckCircle2, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getEarnedBadges } from '@/lib/rewards';
+import { db } from '@/lib/db';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 
 interface DashboardProps {
   onStartPractice: (industry: string, customTopic?: string) => void;
   dailyGoal: number;
+  userName?: string;
 }
 
-export function Dashboard({ onStartPractice, dailyGoal }: DashboardProps) {
+export function Dashboard({ onStartPractice, dailyGoal, userName }: DashboardProps) {
   const [customTopic, setCustomTopic] = useState('');
-  const [activeCategory, setActiveCategory] = useState<'Casual' | 'Professional'>('Casual');
-  
-  const earnedBadges = getEarnedBadges();
-  const hasFirstStep = earnedBadges.includes('first_step');
-  const hasHighFlyer = earnedBadges.includes('high_flyer');
+  const [todayMinutes, setTodayMinutes] = useState(0);
+  const [weeklySessions, setWeeklySessions] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const learningPaths = {
-    Casual: [
-      { id: 'common-phrases', name: 'Common Phrases', level: 'Beginner', locked: false, color: 'bg-teal-100 text-teal-700', description: 'Essential everyday expressions and greetings.' },
-      { id: 'native-say', name: 'Native: Say vs Don\'t Say', level: 'Intermediate', locked: !hasFirstStep, req: 'Complete 1 session', color: 'bg-orange-100 text-orange-700', description: 'Sound more natural by avoiding textbook phrases.' },
-      { id: 'reductions', name: 'Reductions & Linking', level: 'Intermediate', locked: !hasFirstStep, req: 'Complete 1 session', color: 'bg-indigo-100 text-indigo-700', description: 'Understand "gonna", "wanna", and connected speech.' },
-      { id: 'slang', name: 'Modern Slang', level: 'Advanced', locked: !hasHighFlyer, req: 'Score 90%+', color: 'bg-pink-100 text-pink-700', description: 'Current slang used in casual conversations.' },
-    ],
-    Professional: [
-      { id: 'tech', name: 'Tech & Engineering', level: 'Intermediate', locked: false, color: 'bg-blue-100 text-blue-700', description: 'Master technical jargon and presentation skills.' },
-      { id: 'medical', name: 'Medical & Health', level: 'Advanced', locked: !hasFirstStep, req: 'Complete 1 session', color: 'bg-emerald-100 text-emerald-700', description: 'Patient communication and medical terminology.' },
-      { id: 'business', name: 'Business & Sales', level: 'Beginner', locked: false, color: 'bg-amber-100 text-amber-700', description: 'Negotiation, pitching, and professional etiquette.' },
-      { id: 'academic', name: 'Academic Research', level: 'Advanced', locked: !hasHighFlyer, req: 'Score 90%+', color: 'bg-purple-100 text-purple-700', description: 'Presenting research and academic discussions.' },
-    ]
+  useEffect(() => {
+    const fetchData = async () => {
+      setIsLoading(true);
+      
+      let user = null;
+      if (isSupabaseConfigured) {
+        try {
+            const { data } = await supabase.auth.getUser();
+            user = data.user;
+        } catch (e) {
+            console.warn("Failed to fetch user:", e);
+        }
+      }
+      
+      if (user) {
+        try {
+          // Fetch sessions
+          const sessions = await db.getPracticeSessions(user.id);
+          if (sessions) {
+            setWeeklySessions(sessions);
+            const today = new Date().toDateString();
+            const minutes = sessions.reduce((acc: number, session: any) => {
+              const sessionDate = new Date(session.created_at).toDateString();
+              if (sessionDate === today) {
+                return acc + (session.duration / 60);
+              }
+              return acc;
+            }, 0);
+            setTodayMinutes(Math.round(minutes));
+          }
+        } catch (error) {
+          console.error("Error fetching dashboard data:", error);
+        }
+      } else {
+        // Fallback to local storage
+        const localHistory = JSON.parse(localStorage.getItem('accent_ai_history') || '[]');
+        setWeeklySessions(localHistory);
+        
+        const today = new Date().toDateString();
+        const minutes = localHistory.reduce((acc: number, session: any) => {
+            // Handle both date formats (locale string vs ISO) - simple check
+            const sessionDate = new Date(session.id).toDateString(); // ID is timestamp
+            if (sessionDate === today) {
+                 // Handle both duration formats
+                 if (session.durationSeconds) return acc + (session.durationSeconds / 60);
+                 return acc + parseInt(session.duration);
+            }
+            return acc;
+        }, 0);
+        setTodayMinutes(Math.round(minutes));
+      }
+      setIsLoading(false);
+    };
+
+    fetchData();
+  }, []);
+  
+  // Helper to get current week days (Mon-Sun)
+  const getWeekDays = () => {
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0-6, Sun-Sat
+    const numDay = now.getDate();
+
+    const start = new Date(now);
+    // If Sunday (0), subtract 6 to get previous Monday. Otherwise subtract dayOfWeek - 1
+    const daysToSubtract = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    start.setDate(numDay - daysToSubtract);
+    start.setHours(0, 0, 0, 0);
+
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      days.push(d);
+    }
+    return days;
   };
+
+  const weekDays = getWeekDays();
+  const todayDateString = new Date().toDateString();
+
+  const hasSessionOnDate = (date: Date) => {
+    const dateString = date.toDateString();
+    return weeklySessions.some(session => {
+      const sessionDate = session.created_at 
+        ? new Date(session.created_at).toDateString() 
+        : new Date(session.id).toDateString();
+      return sessionDate === dateString;
+    });
+  };
+
+  const progressPercentage = Math.min(100, Math.round((todayMinutes / dailyGoal) * 100));
+  const radius = 45;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (progressPercentage / 100) * circumference;
 
   return (
     <div className="space-y-8">
       <header>
-        <motion.h1 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-3xl md:text-4xl font-serif font-bold text-stone-900 mb-2"
-        >
-          Good morning, Alex
-        </motion.h1>
-        <p className="text-stone-500">Ready to improve your pronunciation today?</p>
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+          <div>
+            <motion.h1 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-3xl md:text-4xl font-serif font-bold text-stone-900 mb-2"
+            >
+              Good morning, {userName || 'Guest'}
+            </motion.h1>
+            <p className="text-stone-500">Ready to improve your pronunciation today?</p>
+          </div>
+        </div>
       </header>
 
       {/* Daily Goal Card */}
@@ -57,8 +142,43 @@ export function Dashboard({ onStartPractice, dailyGoal }: DashboardProps) {
             <span className="bg-terracotta-500 text-white text-xs font-bold px-2 py-1 rounded-full uppercase tracking-wide">Daily Goal</span>
             <span className="text-stone-400 text-sm">{dailyGoal} mins target</span>
           </div>
-          <h2 className="text-2xl font-serif font-bold mb-2">Keep your streak alive!</h2>
-          <p className="text-stone-600 mb-6 max-w-md">You're on a 12-day streak. Complete one roleplay session to reach your daily target of {dailyGoal} minutes.</p>
+          <h2 className="text-2xl font-serif font-bold mb-2">
+            {progressPercentage >= 100 ? "Goal Achieved!" : "Keep your streak alive!"}
+          </h2>
+          <p className="text-stone-600 mb-6 max-w-md">
+            {progressPercentage >= 100 
+                ? "You've hit your daily target! Feel free to practice more." 
+                : `You've practiced ${todayMinutes} minutes today. Complete another session to reach your target.`}
+          </p>
+
+          {/* Weekly Calendar Strip */}
+          <div className="w-full mb-8">
+            <div className="flex items-center justify-between md:justify-start gap-2 md:gap-4">
+              {weekDays.map((date, i) => {
+                const isToday = date.toDateString() === todayDateString;
+                const hasSession = hasSessionOnDate(date);
+                const dayName = date.toLocaleDateString('en-US', { weekday: 'narrow' });
+                
+                return (
+                  <div key={i} className="flex flex-col items-center gap-2">
+                    <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">{dayName}</span>
+                    <div className={cn(
+                      "w-9 h-9 md:w-10 md:h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all shadow-sm",
+                      isToday ? "ring-2 ring-stone-900 ring-offset-2" : "",
+                      hasSession 
+                        ? "bg-olive-500 text-white shadow-olive-200" 
+                        : isToday 
+                          ? "bg-stone-900 text-white" 
+                          : "bg-stone-50 text-stone-400"
+                    )}>
+                      {hasSession ? <CheckCircle2 size={16} /> : date.getDate()}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <button 
             onClick={() => onStartPractice('general')}
             className="bg-olive-500 hover:bg-olive-600 text-white px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2"
@@ -71,10 +191,18 @@ export function Dashboard({ onStartPractice, dailyGoal }: DashboardProps) {
           {/* Simple circular progress visualization */}
           <svg className="w-full h-full transform -rotate-90">
             <circle cx="50%" cy="50%" r="45%" className="stroke-cream-100 fill-none stroke-[8]" />
-            <circle cx="50%" cy="50%" r="45%" className="stroke-terracotta-500 fill-none stroke-[8]" strokeDasharray="283" strokeDashoffset="100" strokeLinecap="round" />
+            <circle 
+                cx="50%" 
+                cy="50%" 
+                r="45%" 
+                className="stroke-terracotta-500 fill-none stroke-[8] transition-all duration-1000 ease-out" 
+                strokeDasharray={circumference} 
+                strokeDashoffset={strokeDashoffset} 
+                strokeLinecap="round" 
+            />
           </svg>
           <div className="absolute inset-0 flex items-center justify-center flex-col">
-            <span className="text-3xl font-bold font-serif">65%</span>
+            <span className="text-3xl font-bold font-serif">{progressPercentage}%</span>
           </div>
         </div>
       </motion.section>
@@ -125,77 +253,6 @@ export function Dashboard({ onStartPractice, dailyGoal }: DashboardProps) {
           </div>
         </div>
       </motion.section>
-
-      {/* Learning Path */}
-      <section>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
-          <h3 className="text-xl font-serif font-bold">Your Learning Path</h3>
-          
-          <div className="bg-stone-100 p-1 rounded-xl inline-flex self-start sm:self-auto">
-            {(['Casual', 'Professional'] as const).map((category) => (
-              <button
-                key={category}
-                onClick={() => setActiveCategory(category)}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                  activeCategory === category
-                    ? "bg-white text-stone-900 shadow-sm"
-                    : "text-stone-500 hover:text-stone-700 hover:bg-stone-200/50"
-                )}
-              >
-                {category}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <AnimatePresence mode="wait">
-            {learningPaths[activeCategory].map((path, index) => (
-              <motion.div
-                key={path.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                transition={{ delay: index * 0.05 }}
-                className={cn(
-                  "group relative bg-white rounded-2xl p-6 border border-stone-100 transition-all hover:shadow-md cursor-pointer",
-                  path.locked && "opacity-75 bg-stone-50"
-                )}
-                onClick={() => !path.locked && onStartPractice(path.id)}
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <span className={cn("text-xs font-bold px-2 py-1 rounded-md uppercase tracking-wide", path.color)}>
-                    {path.level}
-                  </span>
-                  {path.locked ? (
-                      <div className="flex items-center gap-1 text-stone-400" title={path.req ? `Unlock: ${path.req}` : 'Locked'}>
-                          {path.req && <span className="text-[10px] font-medium uppercase tracking-wide hidden group-hover:inline-block transition-all">{path.req}</span>}
-                          <Lock size={18} />
-                      </div>
-                  ) : (
-                      <ArrowRight size={18} className="text-stone-300 group-hover:text-olive-500 transition-colors" />
-                  )}
-                </div>
-                
-                <h4 className="text-lg font-bold mb-2">{path.name}</h4>
-                <p className="text-stone-500 text-sm mb-4">{path.description}</p>
-                
-                <div className="flex items-center gap-4 text-xs text-stone-400">
-                  <div className="flex items-center gap-1">
-                    <Clock size={14} />
-                    <span>5-10 min</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Star size={14} />
-                    <span>+50 XP</span>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-      </section>
     </div>
   );
 }
